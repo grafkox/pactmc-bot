@@ -1,17 +1,21 @@
-# Verwende ein offizielles Node.js-Image als Basis
+# Abhängigkeiten in einem eigenen Stage installieren, damit npm nicht im fertigen Image landet.
+FROM node:24-alpine AS deps
+WORKDIR /usr/src/app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
 FROM node:24-alpine
 
-# Arbeitsverzeichnis im Container festlegen
+# npm, npx und corepack braucht der Bot zur Laufzeit nicht. Sie bringen eigene Abhängigkeiten
+# mit (z.B. undici, brace-expansion), die sonst im Image-Scan auftauchen.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+        /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+        /opt/yarn* /usr/local/bin/yarn /usr/local/bin/yarnpkg
+
 WORKDIR /usr/src/app
+ENV NODE_ENV=production
 
-# Kopiere package.json und package-lock.json
-COPY package*.json ./
-
-# Installiere die Abhängigkeiten
-RUN npm install --omit=dev
-
-# Kopiere den Rest des Anwendungscodes
+COPY --from=deps /usr/src/app/node_modules ./node_modules
 COPY . .
 
-# Starte die Anwendung
-CMD ["npm", "run", "start"]
+CMD ["node", "src/index.js"]

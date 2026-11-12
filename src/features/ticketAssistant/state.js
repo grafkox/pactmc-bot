@@ -17,6 +17,9 @@ function ensureTicket(channelId) {
             autoReplies: 0,
             debounceTimer: null,
             pendingImages: [],
+            busy: false,
+            rerun: false,
+            lastUserId: null,
         };
         tickets.set(channelId, ticket);
     }

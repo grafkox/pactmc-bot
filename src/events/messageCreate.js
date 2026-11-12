@@ -20,8 +20,15 @@ function handleDm(message, args) {
         return;
     }
 
-    member.send(args.join(' '));
-    message.channel.send('Nachricht erfolgreich gesendet!');
+    const text = args.join(' ').replace(/<@!?\d+>\s*/, '').trim();
+    if (!text) {
+        message.channel.send('Du hast keinen Text angegeben!');
+        return;
+    }
+
+    member.send(text)
+        .then(() => message.channel.send('Nachricht erfolgreich gesendet!'))
+        .catch(() => message.channel.send('Der User nimmt keine Direktnachrichten an.'));
 }
 
 function handleMessage(message, args) {
@@ -36,10 +43,13 @@ function handleMessage(message, args) {
         return;
     }
 
-    // slice(22) entfernt die Channel-Mention `<#…>` plus Leerzeichen aus dem
-    // Anfang. Brittle: stimmt nur für 18-stellige IDs, wird bei 19-stelligen
-    // IDs ein Zeichen zu wenig entfernen. Verhalten 1:1 aus dem Original.
-    channel.send(args.join(' ').slice(22));
+    const text = args.join(' ').replace(/<#\d+>\s*/, '').trim();
+    if (!text) {
+        message.channel.send('Du hast keinen Text angegeben!');
+        return;
+    }
+
+    channel.send(text).catch((error) => console.error('!message fehlgeschlagen:', error));
 }
 
 module.exports = {

@@ -23,7 +23,11 @@
   },
   "homepage": "https://github.com/GrafkoxLP/pactmc-bot#readme",
   "dependencies": {
-    "discord.js": "^14.26.3",
-    "dotenv": "^17.4.2"
+    "discord.js": "^14.28.1",
+    "dotenv": "^18.0.10",
+    "rcon-client": "^4.2.5"
+  },
+  "overrides": {
+    "undici": "^6.29.1"
   }
 }
