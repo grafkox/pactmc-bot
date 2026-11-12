@@ -195,21 +195,26 @@ async function runAnswer(history, images = [], { notes = [] } = {}) {
 
 // Antwort auf eine direkte @-Erwähnung. Gleiches Modell wie runAnswer, aber mit
 // Modus-Hinweis: direkt antworten, bei Unsicherheit ehrlich sein, nicht von sich aus eskalieren.
-async function runMention(history, images = []) {
+async function runMention(history, images = [], { allowActions = false } = {}) {
     const marker = {
         role: 'system',
         content:
             'Modus: direkte @-Erwähnung im Chat. Antworte direkt, konkret und hilfreich auf die letzte Nachricht. '
             + 'Wenn du etwas nicht sicher aus der Wissensdatenbank weißt, sag das ehrlich und erfinde nichts. '
-            + 'Eskaliere NICHT von dir aus; ein Mensch wird nur auf ausdrücklichen Wunsch des Users geholt.',
+            + 'Eskaliere NICHT von dir aus; ein Mensch wird nur auf ausdrücklichen Wunsch des Users geholt. '
+            + (allowActions
+                ? 'Erlaubte Aktionen: "verify" und "logs", keine Server-Befehle und kein Console-Upgrade.'
+                : 'Hier sind keine Aktionen möglich, antworte nur mit Text.'),
     };
     const messages = withImages([marker, ...history], images);
-    const { parsed } = await completeJson(ticketAssistant.openWebUi.answerModel, messages);
+    const { raw, parsed } = await completeJson(ticketAssistant.openWebUi.answerModel, messages);
     const response = typeof parsed.response === 'string' && parsed.response.trim() ? parsed.response.trim() : null;
     return {
         response,
         escalate: Boolean(parsed.escalate),
+        action: allowActions ? parseAction(parsed.action) : null,
         reason: typeof parsed.reason === 'string' ? parsed.reason : '',
+        raw: raw.trim(),
     };
 }
 

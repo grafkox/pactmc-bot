@@ -84,6 +84,8 @@ Verhalten je Ticket:
 - Wer den Bot per `@Bot` erwähnt (in Tickets, Mod-Chat und Admin-Chat), bekommt eine Antwort mit den letzten `MENTION_CONTEXT_MESSAGES`
   Nachrichten als Kontext, höchstens `MENTION_CONTEXT_HOURS` Stunden alt. Der Bot eskaliert dabei nicht von sich aus,
   das Team wird nur gepingt, wenn jemand ausdrücklich einen Menschen verlangt. Erwähnungen sind auf 5 pro Minute je User begrenzt.
+  In offenen Tickets (nicht in Bewerbungen) kann der Bot dabei Logs durchsuchen und den Ingame-Namen bestätigen lassen,
+  auch nach einer Eskalation. Server-Befehle laufen per Erwähnung nie.
 
 Prompts und Einrichtung der Modelle stehen in [docs/open-webui-setup.md](docs/open-webui-setup.md).
 

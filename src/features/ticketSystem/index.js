@@ -370,9 +370,11 @@ async function postTicketPanel(interaction) {
     const embed = createBrandedEmbed(interaction.client)
         .setTitle('Support-Tickets')
         .setDescription('Wähle unten den passenden Bereich, um ein Ticket zu öffnen.');
+    // Discord gibt nur 3 Sekunden für die erste Antwort, deshalb vorher bestätigen.
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const message = await interaction.channel.send({ embeds: [embed], components: ticketPanelComponents() });
     store.setPanel('ticket', { channelId: interaction.channel.id, messageId: message.id });
-    await interaction.reply({ content: 'Panel gepostet.', flags: MessageFlags.Ephemeral });
+    await interaction.editReply({ content: 'Panel gepostet.' });
 }
 
 async function postBewerbungPanel(interaction) {
@@ -385,9 +387,10 @@ async function postBewerbungPanel(interaction) {
     const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('ticket_open:bewerbung').setLabel('Bewerbung öffnen').setStyle(ButtonStyle.Success),
     );
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const message = await interaction.channel.send({ embeds: [embed], components: [row] });
     store.setPanel('bewerbung', { channelId: interaction.channel.id, messageId: message.id });
-    await interaction.reply({ content: 'Bewerbungs-Panel gepostet.', flags: MessageFlags.Ephemeral });
+    await interaction.editReply({ content: 'Bewerbungs-Panel gepostet.' });
 }
 
 const BUTTONS = {

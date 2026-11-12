@@ -1,8 +1,10 @@
-const { ticketSystem, ticketAssistant, modRoleId } = require('../../config');
+const { ticketSystem, ticketAssistant, mcCommands, modRoleId } = require('../../config');
 const { runMention } = require('../ticketAssistant/openwebui');
 const log = require('../ticketAssistant/log');
 const { hasAnyRole } = require('../../utils/hasAnyRole');
 const { hit } = require('../mcCommands/ratelimit');
+const { runAction, neutralize } = require('../ticketAssistant/actions');
+const store = require('../ticketSystem/store');
 
 const mention = ticketSystem.mention;
 const MAX_IMAGES = ticketAssistant.maxImagesPerBatch || 4;
@@ -20,6 +22,14 @@ const HUMAN_REQUEST = /(echte[rn]? (mensch|person)|mit (einem|nem|einer) (mensch
 
 function isTicketChannel(channel) {
     return Boolean(channel?.parentId && ticketCategoryIds.includes(channel.parentId));
+}
+
+// Logs und Namensbestätigung nur in offenen Tickets. In Bewerbungen fängt niemand den Code ab,
+// in Mod- und Admin-Chat gibt es keinen Ticket-Ersteller.
+function actionsAllowed(channel) {
+    if (!isTicketChannel(channel)) return false;
+    const stored = store.getTicket(channel.id);
+    return !stored || (stored.type !== 'bewerbung' && stored.status !== 'closed');
 }
 
 function isAllowed(message) {
@@ -67,7 +77,9 @@ async function buildContext(channel, botId) {
         }
         if (m.author.bot) continue;
         const text = cleanContent(m, botId);
-        if (text) history.push({ role: 'user', content: `${m.author.username}: ${text}` });
+        // Bestätigungscodes gehören nicht in den Kontext.
+        if (!text || /^\d{6}$/.test(text)) continue;
+        history.push({ role: 'user', content: `${m.author.username}: ${neutralize(text)}` });
     }
     return history;
 }
@@ -91,9 +103,22 @@ async function handleMention(message, client) {
     const history = await buildContext(channel, client.user.id);
     const images = await fetchImages(message);
 
+    const allowActions = actionsAllowed(channel);
+    const steps = [];
     let result;
     try {
-        result = await runMention(history, images);
+        let convo = history;
+        result = await runMention(convo, images, { allowActions });
+        for (let cycle = 0; result.action && cycle < mcCommands.maxCycles; cycle++) {
+            if (result.response) await channel.send({ content: result.response.slice(0, 2000), allowedMentions: { parse: [] } });
+            const step = await runAction({
+                action: result.action, channel, client, info: { mode: 'normal' },
+                userId: message.author.id, excerpts: [], staffExcerpts: [], viaMention: true,
+            });
+            steps.push(`${result.action.type}: ${step.status}`);
+            convo = [...convo, { role: 'assistant', content: result.raw }, { role: 'user', content: step.text }];
+            result = await runMention(convo, [], { allowActions });
+        }
     } catch (error) {
         log.error(`Mention-Fehler in #${channel.name}:`, error);
         return;
@@ -107,7 +132,8 @@ async function handleMention(message, client) {
     if (isTicketChannel(channel) && HUMAN_REQUEST.test(cleanContent(message, client.user.id))) {
         await channel.send({ content: `<@&${modRoleId}>`, allowedMentions: { roles: [modRoleId] } }).catch(() => {});
     }
-    log.info(`#${channel.name} | @mention beantwortet (${history.length} Kontext, ${images.length} Bild)`);
+    const actionNote = steps.length ? `, Aktionen: ${steps.join(', ')}` : '';
+    log.info(`#${channel.name} | @mention beantwortet (${history.length} Kontext, ${images.length} Bild${actionNote})`);
 }
 
 module.exports = { handleMention };

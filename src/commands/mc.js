@@ -5,7 +5,7 @@ const { mcHost } = require('../config');
 const STATUS_API = 'https://api.mcstatus.io/v2/status/java';
 
 async function fetchServerStatus(host) {
-    const response = await fetch(`${STATUS_API}/${encodeURIComponent(host)}`);
+    const response = await fetch(`${STATUS_API}/${encodeURIComponent(host)}`, { signal: AbortSignal.timeout(10000) });
     if (!response.ok) {
         throw new Error(`mcstatus.io HTTP ${response.status}`);
     }
@@ -18,6 +18,7 @@ module.exports = {
         .setDescription('Sehe nach, ob der PactMC Server online ist'),
 
     async execute(interaction, client) {
+        await interaction.deferReply();
         try {
             const data = await fetchServerStatus(mcHost);
 
@@ -33,7 +34,7 @@ module.exports = {
                     { name: 'Server IP', value: '*pactmc.de*', inline: true },
                     { name: 'Website', value: '*pactmc.de*', inline: true },
                 );
-            await interaction.reply({ embeds: [embed] });
+            await interaction.editReply({ embeds: [embed] });
         } catch (error) {
             const embed = createBrandedEmbed(client)
                 .setTitle('PactMC Minecraft Server')
@@ -42,7 +43,7 @@ module.exports = {
                     { name: 'Server IP', value: '*pactmc.de*', inline: true },
                     { name: 'Website', value: '*pactmc.de*', inline: true },
                 );
-            await interaction.reply({ embeds: [embed] });
+            await interaction.editReply({ embeds: [embed] });
         }
     },
 };

@@ -3,6 +3,8 @@ const { runLogs } = require('../serverLogs');
 const { ensureVerified } = require('../verification');
 
 const MARK = '[[SERVER-ERGEBNIS]]';
+// Nach einem Ergebnis antwortet das Modell gern in Fließtext, deshalb am Ende ein Hinweis aufs Format.
+const FORMAT_HINT = 'Antworte jetzt wie immer nur mit dem JSON-Objekt aus "Ausgabeformat".';
 
 // Nutzertext darf unsere Marker nicht nachbauen, sonst könnte jemand Ergebnisse oder
 // Team-Nachrichten vortäuschen. [Staff] setzt nur buildHistory anhand der Discord-Rolle.
@@ -106,8 +108,16 @@ function formatLogs(result) {
 
 // Führt eine Aktion des Antwortmodells aus und liefert den Text, der als Ergebnis zurückgeht.
 async function runAction(ctx) {
+    const step = await executeAction(ctx);
+    return { status: step.status, text: `${step.text}\n${FORMAT_HINT}` };
+}
+
+async function executeAction(ctx) {
     const { action, info } = ctx;
     let result;
+    if (action.type === 'command' && ctx.viaMention) {
+        return { status: 'not_available', text: `${MARK}\ntyp: befehl\nstatus: not_available\nPer @-Erwähnung laufen keine Server-Befehle. Antworte dem User ohne Befehl.` };
+    }
     if (action.type === 'command') {
         result = info.mode === 'console'
             ? await runCommand(ctx)
