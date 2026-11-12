@@ -26,10 +26,16 @@ async function review({ target, command, tier, profile, rationale, ticket, excer
     let parsed;
     try {
         const raw = await chatCompletion(mcCommands.supervisorModel, [{ role: 'user', content: JSON.stringify(payload) }]);
-        parsed = parseStrictJson(raw);
+        try {
+            parsed = parseStrictJson(raw);
+        } catch (error) {
+            log.warn(`Supervisor lieferte kein JSON. Rohantwort: "${log.truncate(raw, 300)}"`);
+            throw error;
+        }
     } catch (error) {
         log.error('Supervisor nicht verfügbar oder ungültige Antwort:', error);
-        return { allow: false, error: true, reason: 'Supervisor nicht verfügbar oder ungültige Antwort.' };
+        // detail nur für /systemtest, das Antwortmodell bekommt den allgemeinen Grund.
+        return { allow: false, error: true, detail: error.message, reason: 'Supervisor nicht verfügbar oder ungültige Antwort.' };
     }
 
     const reason = clip(parsed.reason, 400);
