@@ -19,23 +19,33 @@ module.exports = {
 
     async execute(interaction, client) {
         await interaction.deferReply();
+        let data;
         try {
-            const data = await fetchServerStatus(mcHost);
-
-            if (!data.online) {
-                throw new Error('server offline');
-            }
-
+            data = await fetchServerStatus(mcHost);
+        } catch (error) {
+            console.error('Server-Status nicht abrufbar:', error.message);
             const embed = createBrandedEmbed(client)
                 .setTitle('PactMC Minecraft Server')
                 .addFields(
-                    { name: 'Server Status', value: 'Der Server ist aktuell **online** :white_check_mark:' },
-                    { name: 'Spielerzahl', value: data.players.online + '/' + data.players.max, inline: true },
+                    { name: 'Server Status', value: 'Der Server-Status konnte gerade nicht abgefragt werden. Versuch es gleich nochmal.' },
                     { name: 'Server IP', value: '*pactmc.de*', inline: true },
                     { name: 'Website', value: '*pactmc.de*', inline: true },
                 );
             await interaction.editReply({ embeds: [embed] });
-        } catch (error) {
+            return;
+        }
+
+        if (data.online) {
+            const embed = createBrandedEmbed(client)
+                .setTitle('PactMC Minecraft Server')
+                .addFields(
+                    { name: 'Server Status', value: 'Der Server ist aktuell **online** :white_check_mark:' },
+                    { name: 'Spielerzahl', value: `${data.players?.online ?? 0}/${data.players?.max ?? 0}`, inline: true },
+                    { name: 'Server IP', value: '*pactmc.de*', inline: true },
+                    { name: 'Website', value: '*pactmc.de*', inline: true },
+                );
+            await interaction.editReply({ embeds: [embed] });
+        } else {
             const embed = createBrandedEmbed(client)
                 .setTitle('PactMC Minecraft Server')
                 .addFields(

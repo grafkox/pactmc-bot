@@ -24,13 +24,24 @@ function labelOf(name) {
 }
 
 // Liest eine Datei zeilenweise (gz wird gestreamt) und ruft onLine für jede Zeile auf.
+// Ist eine normale Datei größer als maxBytesPerFile, wird nur ihr Ende gelesen, denn dort
+// stehen die neuesten Einträge. Bei gz geht das nicht, dort zählt der Anfang.
 async function scanFile(file, onLine) {
-    const source = fs.createReadStream(file);
-    const input = file.endsWith('.gz') ? source.pipe(zlib.createGunzip()) : source;
+    const gz = file.endsWith('.gz');
+    const size = gz ? 0 : (await fs.promises.stat(file)).size;
+    const start = Math.max(0, size - serverLogs.maxBytesPerFile);
+    const source = fs.createReadStream(file, { start });
+    const input = gz ? source.pipe(zlib.createGunzip()) : source;
     const rl = readline.createInterface({ input, crlfDelay: Infinity });
     let bytes = 0;
+    let skipPartial = start > 0;
     try {
         for await (const line of rl) {
+            // Beim Einstieg mitten in die Datei ist die erste Zeile abgeschnitten.
+            if (skipPartial) {
+                skipPartial = false;
+                continue;
+            }
             bytes += line.length + 1;
             if (bytes > serverLogs.maxBytesPerFile) break;
             onLine(line);
@@ -61,12 +72,17 @@ async function queryLogs({ server, terms, sinceHours, maxLines, transform = (lin
     for (const file of files) {
         const label = labelOf(file.name);
         await scanFile(path.join(dir, file.name), (line) => {
+            // Grobfilter auf der Rohzeile spart Arbeit. Entscheidend ist aber die Zeile, die der
+            // Spieler sehen darf: sonst ließe sich über Trefferzahlen z.B. testen, wem eine IP gehört.
             const lower = line.toLowerCase();
             if (!needles.every((n) => lower.includes(n))) return;
             const visible = transform(line);
             if (visible === null) return;
+            const clean = sanitizeLine(visible);
+            const cleanLower = clean.toLowerCase();
+            if (!needles.every((n) => cleanLower.includes(n))) return;
             matches += 1;
-            kept.push(`[${label}] ${sanitizeLine(visible)}`);
+            kept.push(`[${label}] ${clean}`);
             if (kept.length > maxLines) kept.shift();
         });
     }

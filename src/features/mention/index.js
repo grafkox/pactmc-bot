@@ -4,6 +4,7 @@ const log = require('../ticketAssistant/log');
 const { hasAnyRole } = require('../../utils/hasAnyRole');
 const { hit } = require('../mcCommands/ratelimit');
 const { runAction, neutralize } = require('../ticketAssistant/actions');
+const { defuseLinks } = require('../ticketAssistant/links');
 const store = require('../ticketSystem/store');
 
 const mention = ticketSystem.mention;
@@ -18,7 +19,9 @@ const ticketCategoryIds = [
 ];
 
 // Nur bei ausdrücklichem Wunsch nach einem Menschen wird das Team gepingt.
-const HUMAN_REQUEST = /(echte[rn]? (mensch|person)|mit (einem|nem|einer) (menschen|mitarbeiter|teammitglied)|mitarbeiter|teammitglied|jemand vom team|ans team|kein bot|richtige[rn]? (person|mensch)|mensch(en)? (sprechen|reden|schreiben))/i;
+const HUMAN_REQUEST = /(echte[rn]? (mensch|person)|(mit|an) (einem|nem|einen|nen|einer|ner|dem) (menschen|mitarbeiter|teammitglied|supporter|mod|admin)|jemand(en)? vom team|ans team|kein(en)? bot|richtige[rn]? (person|mensch)|mensch(en)? (sprechen|reden|schreiben|haben)|(will|möchte|brauche|hätte gern) (einen |nen )?(menschen|mitarbeiter|teammitglied|supporter))/i;
+// Höchstens ein Team-Ping pro Ticket in diesem Zeitraum.
+const HUMAN_PING_COOLDOWN_MS = 15 * 60 * 1000;
 
 function isTicketChannel(channel) {
     return Boolean(channel?.parentId && ticketCategoryIds.includes(channel.parentId));
@@ -49,7 +52,7 @@ async function fetchImages(message) {
         if (out.length >= MAX_IMAGES) break;
         if (att.size > ticketAssistant.maxImageBytes) continue;
         try {
-            const res = await fetch(att.url);
+            const res = await fetch(att.url, { signal: AbortSignal.timeout(15000) });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const buffer = Buffer.from(await res.arrayBuffer());
             out.push({ dataUrl: `data:${att.contentType || 'image/png'};base64,${buffer.toString('base64')}` });
@@ -94,7 +97,9 @@ async function handleMention(message, client) {
 
     const channel = message.channel;
     // Jede Erwähnung kostet einen Modell-Aufruf, deshalb begrenzt pro User und pro Channel.
-    if (!hit(`mention:user:${message.author.id}`, 5) || !hit(`mention:channel:${channel.id}`, 10)) {
+    // Zusätzlich ein Stundenlimit, weil eine Erwähnung mit Aktionen mehrere Modellaufrufe auslöst.
+    if (!hit(`mention:user:${message.author.id}`, 5) || !hit(`mention:channel:${channel.id}`, 10)
+        || !hit(`mention:user-hour:${message.author.id}`, 30, 60 * 60 * 1000)) {
         log.warn(`#${channel.name} | @mention ignoriert, Rate-Limit (${message.author.username})`);
         return;
     }
@@ -110,7 +115,7 @@ async function handleMention(message, client) {
         let convo = history;
         result = await runMention(convo, images, { allowActions });
         for (let cycle = 0; result.action && cycle < mcCommands.maxCycles; cycle++) {
-            if (result.response) await channel.send({ content: result.response.slice(0, 2000), allowedMentions: { parse: [] } });
+            if (result.response) await channel.send({ content: defuseLinks(result.response).slice(0, 2000), allowedMentions: { parse: [] } });
             const step = await runAction({
                 action: result.action, channel, client, info: { mode: 'normal' },
                 userId: message.author.id, excerpts: [], staffExcerpts: [], viaMention: true,
@@ -126,10 +131,11 @@ async function handleMention(message, client) {
 
     const text = result.response
         || 'Dazu hab ich gerade keine sichere Info. Wenn du ein Teammitglied brauchst, sag einfach kurz Bescheid.';
-    await channel.send({ content: text.slice(0, 2000), allowedMentions: { parse: [] } });
+    await channel.send({ content: defuseLinks(text).slice(0, 2000), allowedMentions: { parse: [] } });
 
     // Staff-Ping nur bei ausdrücklichem Wunsch nach einem Menschen und nur in Ticket-Channels.
-    if (isTicketChannel(channel) && HUMAN_REQUEST.test(cleanContent(message, client.user.id))) {
+    if (isTicketChannel(channel) && HUMAN_REQUEST.test(cleanContent(message, client.user.id))
+        && hit(`mention:human:${channel.id}`, 1, HUMAN_PING_COOLDOWN_MS)) {
         await channel.send({ content: `<@&${modRoleId}>`, allowedMentions: { roles: [modRoleId] } }).catch(() => {});
     }
     const actionNote = steps.length ? `, Aktionen: ${steps.join(', ')}` : '';

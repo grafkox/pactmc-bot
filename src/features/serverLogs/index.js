@@ -2,6 +2,7 @@ const { serverLogs } = require('../../config');
 const { hit } = require('../mcCommands/ratelimit');
 const audit = require('../mcCommands/audit');
 const { queryLogs } = require('./reader');
+const { maskSensitive } = require('./sanitize');
 const { verify, verifiedName, isValidName } = require('../verification');
 const log = require('../ticketAssistant/log');
 
@@ -27,7 +28,16 @@ const PLAYER_LINE_PATTERNS = [
     /(\.?\w{1,16}) lost connection/,
     /(\.?\w{1,16})\[\/.*logged in/,
     /UUID of player (\.?\w{1,16}) is/,
+    // Velocity und weitere Verbindungs- oder Fortschrittszeilen
+    /\[connected player\] (\.?\w{1,16})/i,
+    /\[server connection\] (\.?\w{1,16})/i,
+    /(\.?\w{1,16}) has (?:connected|disconnected)/,
+    /Disconnecting (\.?\w{1,16})/,
+    /(\.?\w{1,16}) moved too quickly/,
+    /(\.?\w{1,16}) has (?:made the advancement|completed the challenge|reached the goal)/,
 ];
+// Todesnachricht eines Spielers: Name direkt nach dem Log-Präfix, danach eine typische Formulierung.
+const DEATH_LINE = /\]: (\.?\w{3,16}) (?:was |died|drowned|blew up|hit the ground|fell |went up in flames|burned|walked into|tried to swim|experienced kinetic|froze|starved|suffocated|withered away|discovered the floor|left the confines|didn't want to live)/;
 const COORD_TRIPLE = /-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?/g;
 const COORD_AXIS = /\b([xyz])=-?\d+(?:\.\d+)?/gi;
 
@@ -39,7 +49,15 @@ function playerView(line, ownName) {
         const match = pattern.exec(line);
         if (match && match[1].toLowerCase() !== own) return null;
     }
-    if (line.toLowerCase().includes(own)) return line;
+    // Ganzes Wort, sonst gälte "Pro" auch für Zeilen von "Pro100".
+    const escaped = own.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const mentionsOwn = new RegExp(`(?<![A-Za-z0-9_])${escaped}(?![A-Za-z0-9_])`, 'i').test(line);
+    // Tode anderer Spieler nur, wenn der Spieler selbst beteiligt war.
+    const death = DEATH_LINE.exec(line);
+    if (death && death[1].toLowerCase() !== own && !mentionsOwn) return null;
+    // Zeilen mit IP-Adresse gehören zu Verbindungen und verraten sonst, wer wann online war.
+    if (!mentionsOwn && maskSensitive(line).includes('[IP]')) return null;
+    if (mentionsOwn) return line;
     return line.replace(COORD_TRIPLE, '[Koordinaten]').replace(COORD_AXIS, '$1=?');
 }
 

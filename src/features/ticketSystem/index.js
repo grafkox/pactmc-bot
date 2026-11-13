@@ -6,9 +6,12 @@ const {
     ButtonBuilder,
     ButtonStyle,
     MessageFlags,
+    RESTJSONErrorCodes,
 } = require('discord.js');
 const { ticketSystem } = require('../../config');
 const { createBrandedEmbed } = require('../../utils/embed');
+const { hasAnyRole } = require('../../utils/hasAnyRole');
+const { hit } = require('../mcCommands/ratelimit');
 const store = require('./store');
 const {
     TicketStatus: AssistantStatus,
@@ -27,6 +30,18 @@ function pad(n) {
 function accessRoleIds(typeKey) {
     const type = ticketSystem.types[typeKey];
     return ticketSystem.accessRoles[type.access] || [];
+}
+
+// Rollen, die das Ticket über die Kategorie-Rechte sehen.
+function teamRoles(ticket) {
+    return ticket.mode === 'console' ? ticketSystem.consoleAccessRoles : accessRoleIds(ticket.type);
+}
+
+// /add und /remove: das Team, in normalen Tickets zusätzlich der Ersteller. In Bewerbungen und
+// Console-Tickets entscheidet nur das Team, wer mitliest.
+function canManageUsers(interaction, ticket) {
+    if (hasAnyRole(interaction.member, teamRoles(ticket))) return true;
+    return ticket.type !== 'bewerbung' && ticket.mode !== 'console' && interaction.user.id === ticket.opener;
 }
 
 function buildOverwrites(guild, openerId, roleIds) {
@@ -93,6 +108,10 @@ async function openTicket(interaction, typeKey) {
     if (open.length >= ticketSystem.maxOpenPerUser) {
         return reject(`Du hast bereits ${open.length} offene Tickets (${open.map((id) => `<#${id}>`).join(', ')}). Schließ bitte zuerst eins davon.`);
     }
+    // Schließen und neu öffnen würde sonst die Kategorien füllen (Discord: 50 Channels pro Kategorie).
+    if (!hit(`ticket:create:${userId}`, ticketSystem.maxCreatedPerHour, 60 * 60 * 1000)) {
+        return reject('Du hast in der letzten Stunde schon mehrere Tickets geöffnet. Versuch es später nochmal oder schreib in dein offenes Ticket.');
+    }
 
     creating.add(userId);
     try {
@@ -158,6 +177,14 @@ function closedCategory(ticket) {
 }
 
 // Prüft, ob der Channel ein Ticket im erwarteten Zustand ist, und antwortet sonst ephemeral.
+// Geschlossene Tickets sieht nur das Team. Falls beim Schließen ein Rechte-Entzug fehlgeschlagen ist,
+// soll der Ersteller trotzdem nicht wieder öffnen oder löschen können.
+async function requireTeam(interaction, ticket) {
+    if (hasAnyRole(interaction.member, teamRoles(ticket))) return true;
+    await interaction.reply({ content: 'Geschlossene Tickets kann nur das Team wieder öffnen oder löschen.', flags: MessageFlags.Ephemeral });
+    return false;
+}
+
 async function requireTicket(interaction, status) {
     const ticket = store.getTicket(interaction.channel.id);
     let problem = null;
@@ -194,8 +221,17 @@ async function closeTicket(interaction) {
     await channel.setParent(closedCategory(ticket), { lockPermissions: false }).catch((error) => {
         console.warn(`${LOG} ${channel.name} konnte nicht ins Archiv verschoben werden: ${error.message}`);
     });
+    // Ein Member-Overwrite schlägt die Rollenrechte. Teammitglieder (z.B. wenn ein Mod selbst ein
+    // Ticket öffnet) verlieren deshalb nur ihren Overwrite und sehen das Archiv über die Rolle.
     for (const userId of [ticket.opener, ...(ticket.added || [])]) {
-        await channel.permissionOverwrites.edit(userId, { ViewChannel: false }).catch(() => {});
+        const member = await channel.guild.members.fetch(userId).catch(() => null);
+        if (hasAnyRole(member, teamRoles(ticket))) {
+            await channel.permissionOverwrites.delete(userId).catch(() => {});
+        } else {
+            await channel.permissionOverwrites.edit(userId, { ViewChannel: false }).catch((error) => {
+                console.error(`${LOG} ${channel.name}: Sicht für ${userId} nicht entzogen: ${error.message}`);
+            });
+        }
     }
     clearAssistantTicket(channel.id);
 
@@ -208,7 +244,8 @@ async function closeTicket(interaction) {
 
 async function reopenTicket(interaction) {
     const channel = interaction.channel;
-    if (!(await requireTicket(interaction, 'closed'))) return;
+    const closedTicket = await requireTicket(interaction, 'closed');
+    if (!closedTicket || !(await requireTeam(interaction, closedTicket))) return;
     await dismissPrompt(interaction);
     const ticket = store.getTicket(channel.id);
     if (!ticket || ticket.status !== 'closed') return;
@@ -230,7 +267,8 @@ async function reopenTicket(interaction) {
 }
 
 async function askDelete(interaction) {
-    if (!(await requireTicket(interaction, 'closed'))) return;
+    const ticket = await requireTicket(interaction, 'closed');
+    if (!ticket || !(await requireTeam(interaction, ticket))) return;
     await interaction.reply({
         content: 'Willst du das Ticket endgültig löschen? Das kann nicht rückgängig gemacht werden.',
         components: [confirmRow('ticket_delete', 'Löschen')],
@@ -244,6 +282,7 @@ async function deleteTicket(interaction) {
         await dismissPrompt(interaction);
         return;
     }
+    if (!(await requireTeam(interaction, ticket))) return;
     await interaction.deferUpdate();
     console.log(`${LOG} ${channel.name} gelöscht von ${interaction.user.username}`);
     // Der Store-Eintrag fliegt über das channelDelete-Event raus.
@@ -257,15 +296,26 @@ async function addUserToTicket(interaction, user) {
         return;
     }
     const reject = (content) => interaction.reply({ content, flags: MessageFlags.Ephemeral });
+    if (!canManageUsers(interaction, ticket)) {
+        return reject(ticket.type === 'bewerbung' || ticket.mode === 'console'
+            ? 'In diesem Ticket kann nur das Team User hinzufügen.'
+            : 'User hinzufügen können nur der Ersteller des Tickets und das Team.');
+    }
     if (ticket.status === 'closed') return reject('Das Ticket ist geschlossen.');
-    if (user.id === interaction.client.user.id || user.id === ticket.opener) return reject(`${user} hat bereits Zugriff auf dieses Ticket.`);
+    if (user.bot) return reject('Bots können nicht zu Tickets hinzugefügt werden.');
     const added = ticket.added || [];
-    if (!added.includes(user.id) && added.length >= ticketSystem.maxAddedUsers) {
+    if (user.id === ticket.opener || added.includes(user.id)) return reject(`${user} hat bereits Zugriff auf dieses Ticket.`);
+    if (added.length >= ticketSystem.maxAddedUsers) {
         return reject(`Mehr als ${ticketSystem.maxAddedUsers} zusätzliche User sind pro Ticket nicht möglich.`);
     }
+    // Teammitglieder sehen das Ticket über ihre Rolle. Ein eigener Overwrite würde sie beim Schließen aussperren.
+    const member = await interaction.guild.members.fetch(user.id).catch(() => null);
+    if (!member) return reject(`${user} ist nicht auf diesem Server.`);
+    if (hasAnyRole(member, teamRoles(ticket))) return reject(`${user} hat über seine Rolle bereits Zugriff auf dieses Ticket.`);
 
     await interaction.channel.permissionOverwrites.edit(user.id, ADDED_PERMS);
     store.addUser(interaction.channel.id, user.id);
+    console.log(`${LOG} ${user.username || user.id} zu ${interaction.channel.name} hinzugefügt von ${interaction.user.username}`);
     await interaction.reply({ content: `${user} wurde zum Ticket hinzugefügt.`, allowedMentions: { users: [user.id] } });
     return undefined;
 }
@@ -274,6 +324,17 @@ async function removeUserFromTicket(interaction, user) {
     const ticket = store.getTicket(interaction.channel.id);
     if (!ticket) {
         await interaction.reply({ content: 'Das geht nur in einem Ticket-Channel.', flags: MessageFlags.Ephemeral });
+        return;
+    }
+    if (!canManageUsers(interaction, ticket)) {
+        const content = ticket.type === 'bewerbung' || ticket.mode === 'console'
+            ? 'In diesem Ticket kann nur das Team User entfernen.'
+            : 'User entfernen können nur der Ersteller des Tickets und das Team.';
+        await interaction.reply({ content, flags: MessageFlags.Ephemeral });
+        return;
+    }
+    if (ticket.status === 'closed') {
+        await interaction.reply({ content: 'Das Ticket ist geschlossen.', flags: MessageFlags.Ephemeral });
         return;
     }
     if (user.id === ticket.opener) {
@@ -285,8 +346,18 @@ async function removeUserFromTicket(interaction, user) {
         await interaction.reply({ content: `${user} wurde nicht per /add hinzugefügt.`, flags: MessageFlags.Ephemeral });
         return;
     }
-    await interaction.channel.permissionOverwrites.delete(user.id).catch(() => {});
+    try {
+        await interaction.channel.permissionOverwrites.delete(user.id);
+    } catch (error) {
+        // 10009: Overwrite gibt es nicht mehr, dann ist der User schon draußen.
+        if (error.code !== RESTJSONErrorCodes.UnknownPermissionOverwrite) {
+            console.error(`${LOG} ${user.id} konnte nicht aus ${interaction.channel.name} entfernt werden:`, error.message);
+            await interaction.reply({ content: `${user} konnte gerade nicht entfernt werden. Versuch es gleich nochmal.`, flags: MessageFlags.Ephemeral });
+            return;
+        }
+    }
     store.removeUser(interaction.channel.id, user.id);
+    console.log(`${LOG} ${user.username || user.id} aus ${interaction.channel.name} entfernt von ${interaction.user.username}`);
     await interaction.reply({ content: `${user} wurde aus dem Ticket entfernt.`, allowedMentions: { parse: [] } });
 }
 

@@ -60,8 +60,11 @@ async function handleConfirmButton(interaction) {
     const embed = EmbedBuilder.from(interaction.message.embeds[0])
         .setColor(approved ? 0x57f287 : 0xed4245)
         .addFields({ name: 'Entscheidung', value: `${approved ? 'Bestätigt' : 'Abgelehnt'} von <@${interaction.user.id}>` });
-    await interaction.update({ content: '', embeds: [embed], components: [] });
+    // Erst entscheiden, dann anzeigen. Scheitert das Update, darf die Pipeline nicht ewig warten.
     entry.resolve(approved ? 'approved' : 'denied');
+    await interaction.update({ content: '', embeds: [embed], components: [] }).catch((error) => {
+        console.error('[MC] Bestätigung angezeigt nicht aktualisiert:', error.message);
+    });
 }
 
 module.exports = { requestConfirmation, handleConfirmButton };

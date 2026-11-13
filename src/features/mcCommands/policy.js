@@ -39,7 +39,18 @@ const BLOCKED_ITEMS = new Set([
     'structure_block', 'structure_void', 'jigsaw', 'test_block', 'test_instance_block',
     'barrier', 'light', 'debug_stick', 'bedrock', 'end_portal_frame', 'spawner', 'trial_spawner',
     'vault', 'reinforced_deepslate', 'knowledge_book', 'written_book', 'writable_book',
+    'tnt', 'tnt_minecart', 'end_crystal', 'respawn_anchor', 'lava_bucket', 'fire_charge',
 ]);
+
+// Nur hilfreiche Effekte ohne PvP-Vorteil. Alles andere gibt es nur von Hand durch das Team.
+const ALLOWED_EFFECTS = new Set([
+    'night_vision', 'fire_resistance', 'water_breathing', 'slow_falling', 'regeneration', 'instant_health',
+    'saturation', 'speed', 'haste', 'jump_boost', 'resistance', 'conduit_power', 'dolphins_grace',
+]);
+
+// Teleport nur in die bebaubare Welt, sonst endet er im Void oder weit über der Baugrenze.
+const MIN_Y = -64;
+const MAX_Y = 320;
 
 // Schlüsselwörter, die bei Velocity (send all, send current) viele Spieler treffen.
 const RESERVED_NAMES = new Set(['all', 'current']);
@@ -86,7 +97,7 @@ const leaf = {
     // Liest Position, Inventar oder Kisteninhalt aus, deshalb nie ohne Bestätigung.
     data: (args) => {
         if (args[0] !== 'get') return no('data: nur "get" ist erlaubt.');
-        if (args[1] === 'entity' && args.length >= 3 && args.length <= 4) return withPlayer(args[2], 'privileged');
+        if (args[1] === 'entity' && args.length >= 3 && args.length <= 4) return withPlayer(args[2], 'privileged', { protect: true });
         if (args[1] === 'block' && args.length >= 5 && args.length <= 6 && args.slice(2, 5).every((n) => NUMBER.test(n))) return ok('privileged');
         return no('data: erlaubt sind "get entity <Spieler> [Pfad]" und "get block <x> <y> <z> [Pfad]".');
     },
@@ -103,7 +114,7 @@ const leaf = {
         if (['add', 'set'].includes(args[0]) && args.length >= 3 && args.length <= 4) {
             if (!/^\d{1,4}$/.test(args[2])) return no('experience: Menge muss eine Zahl bis 9999 sein.');
             if (args[3] && !['points', 'levels'].includes(args[3])) return no('experience: points oder levels erwartet.');
-            return withPlayer(args[1], 'privileged');
+            return withPlayer(args[1], 'privileged', { protect: true });
         }
         return no('experience: ungültige Argumente.');
     },
@@ -118,7 +129,7 @@ const leaf = {
         if (problem) return no(problem);
         const item = args[1].toLowerCase().replace(/^minecraft:/, '');
         if (!ID.test(item)) return no('give: nur einfache Item-IDs ohne Komponenten sind erlaubt.');
-        if (BLOCKED_ITEMS.has(item)) return no(`give: Item ${item} ist gesperrt.`);
+        if (BLOCKED_ITEMS.has(item) || item.endsWith('_spawn_egg')) return no(`give: Item ${item} ist gesperrt.`);
         if (args[2] !== undefined && (!/^\d{1,3}$/.test(args[2]) || Number(args[2]) < 1 || Number(args[2]) > MAX_GIVE_COUNT)) {
             return no(`give: Anzahl muss zwischen 1 und ${MAX_GIVE_COUNT} liegen.`);
         }
@@ -126,23 +137,30 @@ const leaf = {
     },
     teleport: (args) => {
         if (args.length === 2) {
-            const problem = playerProblem(args[0]) || playerProblem(args[1]);
+            const problem = playerProblem(args[0], { protect: true }) || playerProblem(args[1], { protect: true });
             return problem ? no(problem) : ok('privileged');
         }
-        if (args.length === 4 && args.slice(1).every((n) => NUMBER.test(n))) return withPlayer(args[0], 'privileged');
+        if (args.length === 4 && args.slice(1).every((n) => NUMBER.test(n))) {
+            const y = args[2];
+            if (y.startsWith('~')) return no('tp: relative Höhe (~) ist nicht erlaubt, bitte absolute Koordinaten.');
+            if (Number(y) < MIN_Y || Number(y) > MAX_Y) return no(`tp: Höhe muss zwischen ${MIN_Y} und ${MAX_Y} liegen.`);
+            return withPlayer(args[0], 'privileged', { protect: true });
+        }
         return no('tp: erwartet <Spieler> <Spieler> oder <Spieler> <x> <y> <z>.');
     },
     gamemode: (args) => {
         if (args.length !== 2 || !['survival', 'creative', 'adventure', 'spectator'].includes(args[0])) return no('gamemode: erwartet <Modus> <Spieler>.');
-        return withPlayer(args[1], 'privileged');
+        return withPlayer(args[1], 'privileged', { protect: true });
     },
     effect: (args) => {
-        if (args[0] === 'clear' && args.length >= 2 && args.length <= 3) return withPlayer(args[1], 'privileged');
+        if (args[0] === 'clear' && args.length >= 2 && args.length <= 3) return withPlayer(args[1], 'privileged', { protect: true });
         if (args[0] === 'give' && args.length >= 3 && args.length <= 6) {
-            if (!ID.test(args[2].replace(/^minecraft:/, ''))) return no('effect: ungültige Effekt-ID.');
+            const effect = args[2].replace(/^minecraft:/, '');
+            if (!ID.test(effect)) return no('effect: ungültige Effekt-ID.');
+            if (!ALLOWED_EFFECTS.has(effect)) return no(`effect: Effekt ${effect} ist nicht freigegeben.`);
             if (args[3] !== undefined && !(/^\d{1,3}$/.test(args[3]) && Number(args[3]) <= 600)) return no('effect: Dauer maximal 600 Sekunden.');
             if (args[4] !== undefined && !(/^\d$/.test(args[4]) && Number(args[4]) <= 3)) return no('effect: Stärke maximal 3.');
-            return withPlayer(args[1], 'privileged');
+            return withPlayer(args[1], 'privileged', { protect: true });
         }
         return no('effect: ungültige Argumente.');
     },
@@ -188,13 +206,13 @@ function evaluate({ target, command }) {
     if (normalized.length > MAX_LENGTH) return deny(result, `Befehl ist länger als ${MAX_LENGTH} Zeichen.`);
     if (name.includes(':')) return deny(result, 'Befehle mit Namespace sind nicht erlaubt.');
     if (BLOCKED.has(name)) return deny(result, `Der Befehl "${name}" ist hart gesperrt.`);
+    if (normalized.includes('@')) return deny(result, 'Selektoren (@) sind nicht erlaubt.');
 
     const rule = Object.hasOwn(COMMANDS[target], name) ? COMMANDS[target][name] : null;
     if (!rule) return deny(result, `Der Befehl "${name}" steht nicht auf der Allowlist für ${target}.`);
 
     const resolved = rule(args);
     if (resolved.deny) return deny(result, resolved.deny);
-    if (normalized.includes('@')) return deny(result, 'Selektoren (@) sind nicht erlaubt.');
     return { ...result, verdict: 'allow', tier: resolved.tier, reason: '' };
 }
 

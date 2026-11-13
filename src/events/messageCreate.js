@@ -2,50 +2,63 @@ const { Events } = require('discord.js');
 const { prefix } = require('../config');
 const { isOwner } = require('../utils/isOwner');
 
-function handleDm(message, args) {
+// Antwort im Channel, Fehler (z.B. fehlende Rechte) nur loggen.
+function answer(message, text) {
+    return message.channel.send(text).catch((error) => console.error('Antwort fehlgeschlagen:', error.message));
+}
+
+async function handleDm(message, args) {
     if (!isOwner(message.member)) {
-        message.channel.send('Du hast nicht die Berechtigung diesen Befehl zu nutzen!');
+        answer(message, 'Du hast nicht die Berechtigung diesen Befehl zu nutzen!');
         return;
     }
 
     const user = message.mentions.users.first();
     if (!user) {
-        message.channel.send('Du hast keinen User angegeben!');
+        answer(message, 'Du hast keinen User angegeben!');
         return;
     }
 
-    const member = message.guild.members.cache.get(user.id);
+    const member = await message.guild.members.fetch(user.id).catch(() => null);
     if (!member) {
-        message.channel.send('Der User ist nicht auf diesem Server!');
+        answer(message, 'Der User ist nicht auf diesem Server!');
         return;
     }
 
     const text = args.join(' ').replace(/<@!?\d+>\s*/, '').trim();
     if (!text) {
-        message.channel.send('Du hast keinen Text angegeben!');
+        answer(message, 'Du hast keinen Text angegeben!');
         return;
     }
 
-    member.send(text)
-        .then(() => message.channel.send('Nachricht erfolgreich gesendet!'))
-        .catch(() => message.channel.send('Der User nimmt keine Direktnachrichten an.'));
+    try {
+        await member.send(text);
+    } catch {
+        await answer(message, 'Der User nimmt keine Direktnachrichten an.');
+        return;
+    }
+    await answer(message, 'Nachricht erfolgreich gesendet!');
 }
 
 function handleMessage(message, args) {
     if (!isOwner(message.member)) {
-        message.channel.send('Du hast nicht die Berechtigung diesen Befehl zu nutzen!');
+        answer(message, 'Du hast nicht die Berechtigung diesen Befehl zu nutzen!');
         return;
     }
 
     const channel = message.mentions.channels.first();
     if (!channel) {
-        message.channel.send('Du hast keinen Channel angegeben!');
+        answer(message, 'Du hast keinen Channel angegeben!');
+        return;
+    }
+    if (!channel.isTextBased?.()) {
+        answer(message, 'In diesen Channel kann ich nicht schreiben!');
         return;
     }
 
     const text = args.join(' ').replace(/<#\d+>\s*/, '').trim();
     if (!text) {
-        message.channel.send('Du hast keinen Text angegeben!');
+        answer(message, 'Du hast keinen Text angegeben!');
         return;
     }
 
@@ -63,7 +76,7 @@ module.exports = {
         const args = messageArray.slice(1);
 
         if (command === 'dm') {
-            handleDm(message, args);
+            handleDm(message, args).catch((error) => console.error('!dm fehlgeschlagen:', error));
         } else if (command === 'message') {
             handleMessage(message, args);
         }

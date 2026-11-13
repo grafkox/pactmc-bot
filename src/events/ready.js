@@ -21,6 +21,7 @@ module.exports = {
     execute(readyClient) {
         console.log('Bot is ready!');
 
+        pickPresence(readyClient);
         setInterval(() => pickPresence(readyClient), 30 * 1000);
     },
 };

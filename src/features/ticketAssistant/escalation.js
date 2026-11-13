@@ -2,12 +2,14 @@ const { createBrandedEmbed } = require('../../utils/embed');
 const { ticketAssistant } = require('../../config');
 const { setStatus, TicketStatus } = require('./state');
 const log = require('./log');
+const { defuseLinks } = require('./links');
 
 async function escalate(channel, reason, client, roleIds = ticketAssistant.supportRoleIds) {
     setStatus(channel.id, TicketStatus.ESCALATED);
 
     const rolePings = roleIds.map((id) => `<@&${id}>`).join(', ');
-    const shortReason = log.truncate(reason, 800);
+    // Der Grund kommt vom Modell, Links darin sollen nicht getarnt klickbar sein.
+    const shortReason = log.truncate(defuseLinks(reason), 800);
     const embed = createBrandedEmbed(client)
         .setTitle('Support benötigt')
         .setDescription(

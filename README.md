@@ -12,8 +12,8 @@ Discord-Bot für den PactMC-Server, gebaut mit [discord.js](https://discord.js.o
 | `/rules` | Server-Regeln als Embed posten | Owner |
 | `/ticket-panel` | Ticket-Panel mit den Buttons Bug, Hilfe und Beschwerde posten | Owner |
 | `/bewerbungs-panel` | Bewerbungs-Infos mit Button posten | Owner |
-| `/add <user>` | User zum aktuellen Ticket hinzufügen | jeder |
-| `/remove <user>` | Hinzugefügten User wieder aus dem Ticket entfernen | jeder |
+| `/add <user>` | User zum aktuellen Ticket hinzufügen | Team, in normalen Tickets auch der Ersteller |
+| `/remove <user>` | Hinzugefügten User wieder aus dem Ticket entfernen | Team, in normalen Tickets auch der Ersteller |
 | `/unlink <user>` | Bestätigten Ingame-Namen eines Users zurücksetzen | Owner, Admin, Mod-Leitung, Mod |
 | `/console-upgrade` | Ticket auf Console-Zugang hochstufen | Owner, Admin |
 | `/bot-mode <an/aus>` | Bot betreut das Ticket komplett | Owner, Admin, Mod |
@@ -28,7 +28,7 @@ Discord-Bot für den PactMC-Server, gebaut mit [discord.js](https://discord.js.o
 
 Außerdem:
 - Begrüßt neue Mitglieder automatisch im Welcome-Channel und per DM.
-- Pingt das Support-Team, sobald jemand den Support-Warteraum betritt.
+- Pingt das Support-Team, sobald jemand den Support-Warteraum betritt (höchstens alle 2 Minuten pro User).
 - Rotiert seine Discord-Status-Aktivität alle 30 Sekunden.
 
 ## Ticket-System
@@ -41,8 +41,11 @@ auch nach einem Neustart weiter.
 - Channels heißen `bug-0001`, `hilfe-0002` und so weiter, mit einem gemeinsamen Zähler.
 - Schließen kann jeder per Button, nach einer Rückfrage. Das Ticket wandert in die Closed-Kategorie, der Ersteller und per `/add` hinzugefügte User verlieren die Sicht.
 - Im geschlossenen Ticket gibt es die Buttons "Wieder öffnen" (alles wird zurückgesetzt) und "Löschen" (mit Rückfrage, endgültig).
-- Pro User sind höchstens `TICKET_MAX_OPEN_PER_USER` Tickets gleichzeitig offen (Default 3), per `/add` kommen höchstens 10 weitere User in ein Ticket.
-  `/remove` entfernt nur User, die per `/add` dazugekommen sind.
+  Beides darf nur das Team.
+- Pro User sind höchstens `TICKET_MAX_OPEN_PER_USER` Tickets gleichzeitig offen (Default 3) und höchstens 5 neue pro Stunde.
+  Per `/add` kommen höchstens 10 weitere User in ein Ticket.
+  `/remove` entfernt nur User, die per `/add` dazugekommen sind. Bots und Teammitglieder, die das Ticket schon über ihre
+  Rolle sehen, lassen sich nicht hinzufügen. In Bewerbungs- und Console-Tickets entscheidet nur das Team, wer mitliest.
 - Zähler, offene Tickets, Panels, Killswitch, Policy-Profil und bestätigte Ingame-Namen stehen in `data/tickets.json` (siehe Docker).
   Ist die Datei beim Start nicht lesbar, wird sie als `tickets.json.defekt-<Zeit>` gesichert und neu angelegt.
 
@@ -110,8 +113,10 @@ Spieler antworten. Pro Nutzer-Nachricht gibt es höchstens `ACTION_MAX_CYCLES` A
 
 Die Policy lehnt unabhängig von Modell und Profil ab: Befehle außerhalb der Allowlist, `stop`, `restart`, `op`, `deop`, `reload`, `execute`,
 `function`, `save-off`, Rechteverwaltung, Namespace-Befehle (`minecraft:...`), Selektoren (`@a`, `@e`, `@p`),
-Gamerule-Änderungen, Whitelist an/aus, gefährliche Items bei `give` (Command-Blöcke und ähnliche) und `ban`, `kick`, `kill`, `clear`
-gegen Spieler aus `MC_PROTECTED_PLAYERS`. Die Tiers:
+Gamerule-Änderungen, Whitelist an/aus, gefährliche Items bei `give` (Command-Blöcke, TNT, End-Kristalle, Lava, Spawn-Eier und ähnliche), Teleports unter Y -64 oder über Y 320.
+Bei `effect` sind nur hilfreiche Effekte ohne PvP-Vorteil freigegeben (z.B. Nachtsicht, Feuerresistenz, Regeneration). Spieler aus
+`MC_PROTECTED_PLAYERS` (Team) sind geschützt vor `tp`, `gamemode`, `effect`, `experience`, `kick`, `ban`, `pardon`, `kill`,
+`clear`, `send`, `whitelist remove` und `data get`. Die Tiers:
 
 | Tier | Befehle |
 |---|---|
@@ -207,7 +212,7 @@ networks:
 ```
 
 Der Bot braucht auf dem Server die Rechte Kanäle verwalten, Rollen verwalten, Kanäle ansehen, Nachrichten senden, Links einbetten,
-Dateien anhängen und Nachrichtenverlauf lesen. Aktiviert sein müssen die privilegierten Intents Server Members, Presence und Message Content.
+Dateien anhängen und Nachrichtenverlauf lesen. Aktiviert sein müssen die privilegierten Intents Server Members und Message Content, Presence braucht der Bot nicht.
 
 Nach dem ersten Start oder einem Update prüft `/systemtest`, ob alles erreichbar ist: Bot-Rechte, Rollen, Kategorien (inklusive Auslastung,
 Discord erlaubt 50 Channels pro Kategorie), Audit-Channel, Panels, Schreibzugriff auf `data/`, Open WebUI mit allen Modellen, das lokale Gate,
@@ -216,6 +221,9 @@ RCON zu beiden Servern und die Log-Ordner. Mit `modelle: false` werden keine Tes
 ## Environment-Variablen
 
 Alles außer den ersten beiden Zeilen ist optional, Defaults stehen in [src/config.js](src/config.js).
+
+Schalter verstehen `true`/`1`/`yes`/`on` und `false`/`0`/`no`/`off`. Ungültige Werte werden mit Warnung durch den Default ersetzt,
+bei `MC_DRY_RUN` bleibt der Trockenlauf dann an.
 
 | Variable | Beschreibung |
 |---|---|

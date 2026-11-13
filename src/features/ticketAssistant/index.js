@@ -10,6 +10,7 @@ const { hasAnyRole } = require('../../utils/hasAnyRole');
 const verification = require('../verification');
 const { hit } = require('../mcCommands/ratelimit');
 const log = require('./log');
+const { defuseLinks } = require('./links');
 
 const DISCORD_MESSAGE_LIMIT = 2000;
 // Ohne Antwort-Limit (Console, Bot-Modus) begrenzt das die Modell-Aufrufe pro Ticket.
@@ -37,6 +38,8 @@ function isActive(info) {
 }
 
 const isConsole = (info) => info.mode === 'console';
+// Hat das Team übernommen oder wurde eskaliert, während der Bot noch gearbeitet hat?
+const stopped = (ticket) => ticket.status === TicketStatus.PAUSED_HUMAN || ticket.status === TicketStatus.ESCALATED;
 const isUnlimited = (info) => isConsole(info) || Boolean(info.botMode);
 const pauseRoles = (info) => (isConsole(info) ? ticketSystem.consoleAccessRoles : ticketAssistant.pauseRoleIds);
 const pingRoles = (info) => (isConsole(info) ? ticketSystem.consoleAccessRoles : ticketAssistant.supportRoleIds);
@@ -141,7 +144,7 @@ async function collectImages(message, ticket) {
             continue;
         }
         try {
-            const res = await fetch(att.url);
+            const res = await fetch(att.url, { signal: AbortSignal.timeout(15000) });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const buffer = Buffer.from(await res.arrayBuffer());
             const mediaType = att.contentType || 'image/png';
@@ -212,7 +215,7 @@ async function processTicketBatch(channel, client) {
 
 // Antwortmodell aufrufen. Schlägt es Aktionen vor (Befehl, Logs), werden sie ausgeführt und
 // das Ergebnis geht zurück ans Modell, bis es antwortet oder das Zyklus-Limit erreicht ist.
-async function answerWithActions({ channel, client, info, ticket, history, images, tag }) {
+async function answerWithActions({ channel, client, info, ticket, history, images, tag, requesterId }) {
     const notes = notesFor(info);
     const userTurns = history.filter((m) => m.role === 'user' && typeof m.content === 'string');
     const excerpts = userTurns.filter((m) => !m.content.startsWith('[Staff]')).slice(-2).map((m) => m.content);
@@ -222,18 +225,19 @@ async function answerWithActions({ channel, client, info, ticket, history, image
     let sent = 0;
 
     for (let cycle = 0; current.action && cycle < mcCommands.maxCycles; cycle++) {
+        if (stopped(ticket)) return { answer: current, sent, exhausted: false, stopped: true };
         if (current.response) {
             await sendAnswer(channel, current.response);
             sent += 1;
         }
-        const userId = ticket.lastUserId || info.opener || 'unbekannt';
-        const step = await runAction({ action: current.action, channel, client, info, userId, excerpts, staffExcerpts });
+        // Fest für den ganzen Durchlauf: schreibt währenddessen ein anderer User, handelt der Bot nicht plötzlich in dessen Namen.
+        const step = await runAction({ action: current.action, channel, client, info, userId: requesterId, excerpts, staffExcerpts });
         log.info(`${tag} | Aktion ${current.action.type}: ${step.status}`);
         convo = [...convo, { role: 'assistant', content: current.raw }, { role: 'user', content: step.text }];
         current = await runAnswer(convo, [], { notes });
     }
 
-    return { answer: current, sent, exhausted: Boolean(current.action) };
+    return { answer: current, sent, exhausted: Boolean(current.action), stopped: stopped(ticket) };
 }
 
 async function runBatch(channel, client, ticket) {
@@ -243,6 +247,7 @@ async function runBatch(channel, client, ticket) {
     if (!isActive(info)) return;
 
     const tag = `#${channel.name}${info.botMode ? ' [bot-mode]' : ''}`;
+    const requesterId = ticket.lastUserId || info.opener || 'unbekannt';
     const { answerModel } = ticketAssistant.openWebUi;
     const max = ticketAssistant.maxAutoReplies;
     const unlimited = isUnlimited(info);
@@ -287,6 +292,10 @@ async function runBatch(channel, client, ticket) {
         return;
     }
     const gMs = ((Date.now() - tGate) / 1000).toFixed(1);
+    if (stopped(ticket)) {
+        log.info(`${tag} | Team hat übernommen, Batch verworfen`);
+        return;
+    }
 
     // Console und Bot-Modus: Das Antwortmodell entscheidet über Eskalationen, nicht das Gate.
     if (gate.escalate && unlimited) {
@@ -309,15 +318,20 @@ async function runBatch(channel, client, ticket) {
     let outcome;
     const tAns = Date.now();
     try {
-        outcome = await answerWithActions({ channel, client, info, ticket, history, images, tag });
+        outcome = await answerWithActions({ channel, client, info, ticket, history, images, tag, requesterId });
     } catch (error) {
         log.error(`${tag} | ${answerModel} Fehler, eskaliert:`, error);
+        if (stopped(ticket)) return;
         await escalate(channel, 'Interner Fehler bei der Antwortgenerierung.', client, roleIds);
         return;
     }
     const aMs = ((Date.now() - tAns) / 1000).toFixed(1);
     const { answer } = outcome;
     ticket.autoReplies += outcome.sent;
+    if (outcome.stopped) {
+        log.info(`${tag} | Team hat übernommen, Antwort verworfen (${aMs}s)`);
+        return;
+    }
 
     if (outcome.exhausted) {
         log.info(`${tag} | Aktions-Limit erreicht, eskaliert`);
@@ -358,7 +372,8 @@ async function autoUpgrade(channel, client, answer, answered, roleIds) {
 }
 
 async function sendAnswer(channel, text) {
-    const safe = text.length > DISCORD_MESSAGE_LIMIT ? `${text.slice(0, DISCORD_MESSAGE_LIMIT - 1)}...` : text;
+    const plain = defuseLinks(text);
+    const safe = plain.length > DISCORD_MESSAGE_LIMIT ? `${plain.slice(0, DISCORD_MESSAGE_LIMIT - 1)}...` : plain;
     await channel.send({ content: safe, allowedMentions: { parse: [] } });
 }
 

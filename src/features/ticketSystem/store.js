@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { ticketSystem } = require('../../config');
+const { PROFILES } = require('../mcCommands/policy');
 
 const FILE = path.resolve(ticketSystem.dataFile);
 
@@ -19,8 +20,10 @@ function load() {
     let raw;
     try {
         raw = fs.readFileSync(FILE, 'utf8');
-    } catch {
-        return defaults(); // noch keine Datei
+    } catch (error) {
+        if (error.code === 'ENOENT') return defaults(); // noch keine Datei
+        // Z.B. fehlende Rechte: nicht mit leerem Stand weitermachen, sonst überschreibt das nächste Speichern alles.
+        throw new Error(`Ticket-Daten nicht lesbar (${FILE}): ${error.message}`);
     }
 
     try {
@@ -145,6 +148,7 @@ function getPolicyProfile() {
 }
 
 function setPolicyProfile(profile) {
+    if (!Object.hasOwn(PROFILES, profile)) throw new Error(`Unbekanntes Policy-Profil: ${profile}`);
     state.policyProfile = profile;
     save();
 }
